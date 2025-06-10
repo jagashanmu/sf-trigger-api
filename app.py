@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import requests
+import os
 
 app = Flask(__name__)
 
@@ -9,34 +10,48 @@ def create_triggers():
 
     SF_INSTANCE_URL = data['instance_url']
     SF_ACCESS_TOKEN = data['access_token']
+
     headers = {
         'Authorization': f'Bearer {SF_ACCESS_TOKEN}',
         'Content-Type': 'application/json'
     }
 
+    # Step 1: Get distinct object API names
     query_url = f"{SF_INSTANCE_URL}/services/data/v60.0/query"
     soql_query = "SELECT Object_API_Name__c FROM ICP_Criteria_Cust__c GROUP BY Object_API_Name__c"
     response = requests.get(f"{query_url}?q={soql_query}", headers=headers)
 
     if response.status_code != 200:
-        return jsonify({"error": "Failed to retrieve custom settings", "details": response.text}), 500
+        return jsonify({
+            "error": "Failed to retrieve custom settings",
+            "details": response.text
+        }), 500
 
     results = response.json().get('records', [])
     object_api_names = [rec['Object_API_Name__c'] for rec in results]
 
     output = []
 
+    # Step 2: Check for existing trigger and create if missing
     for object_name in object_api_names:
         trigger_name = f"{object_name}ICPTrigger"
         check_query = f"SELECT Id FROM ApexTrigger WHERE TableEnumOrId = '{object_name}' AND Name = '{trigger_name}'"
         check_response = requests.get(f"{query_url}?q={check_query}", headers=headers)
 
         if check_response.status_code != 200:
-            output.append({"object": object_name, "status": "error", "message": check_response.text})
+            output.append({
+                "object": object_name,
+                "status": "error",
+                "message": check_response.text
+            })
             continue
 
-        if check_response.json()['totalSize'] > 0:
-            output.append({"object": object_name, "status": "exists", "message": "Trigger already exists"})
+        if check_response.json().get('totalSize', 0) > 0:
+            output.append({
+                "object": object_name,
+                "status": "exists",
+                "message": "Trigger already exists"
+            })
             continue
 
         trigger_body = f"""
@@ -67,8 +82,21 @@ trigger {trigger_name} on {object_name} (after insert, after update) {{
         create_response = requests.post(create_url, headers=headers, json=trigger_payload)
 
         if create_response.status_code == 201:
-            output.append({"object": object_name, "status": "created", "message": "Trigger created"})
+            output.append({
+                "object": object_name,
+                "status": "created",
+                "message": "Trigger created successfully"
+            })
         else:
-            output.append({"object": object_name, "status": "failed", "message": create_response.text})
+            output.append({
+                "object": object_name,
+                "status": "failed",
+                "message": create_response.text
+            })
 
     return jsonify(output)
+
+# Entry point for Render
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
